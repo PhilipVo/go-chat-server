@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 
 	"github.com/gorilla/websocket"
@@ -22,10 +23,16 @@ type Client struct {
 	send   chan []byte
 }
 
+type Control struct {
+	Action string `json:"action,omitempty"`
+	Data   string `json:"data,omitempty"`
+}
+
 type Message struct {
 	Sender    string `json:"sender,omitempty"`
-	Recipient string `json:"sender,omitempty"`
-	Content   string `json:"sender,omitempty"`
+	Recipient string `json:"recipient,omitempty"`
+	Action    string `json:"action,omitempty"`
+	Content   string `json:"content,omitempty"`
 }
 
 var manager = ClientManager{
@@ -40,13 +47,19 @@ func (manager *ClientManager) start() {
 		select {
 		case conn := <-manager.register:
 			manager.clients[conn] = true
+
+			// Send to self:
+			selfMessage, _ := json.Marshal(&Message{Recipient: conn.id})
+			conn.send <- selfMessage
+
+			// Send to other clients:
 			jsonMessage, _ := json.Marshal(&Message{Content: "/A new socket has connected."})
 			manager.send(jsonMessage, conn)
 		case conn := <-manager.unregister:
 			if _, ok := manager.clients[conn]; ok {
 				close(conn.send)
 				delete(manager.clients, conn)
-				jsonMessage, _ := json.Marshal(&Message{Content: "/A new socket has disconnected."})
+				jsonMessage, _ := json.Marshal(&Message{Content: "/A socket has disconnected."})
 				manager.send(jsonMessage, conn)
 			}
 		case message := <-manager.broadcast:
@@ -83,6 +96,19 @@ func (c *Client) read() {
 			c.socket.Close()
 			break
 		}
+
+		// Handle actions:
+		control := Control{}
+		err = json.Unmarshal(message, &control)
+		if err == nil {
+			switch control.Action {
+			case "SET_ID":
+				c.id = control.Data
+			}
+
+			continue
+		}
+
 		jsonMessage, _ := json.Marshal(&Message{Sender: c.id, Content: string(message)})
 		manager.broadcast <- jsonMessage
 	}
@@ -110,7 +136,7 @@ func main() {
 	fmt.Println("Starting application...")
 	go manager.start()
 	http.HandleFunc("/ws", wsPage)
-	http.ListenAndServe(":12345", nil)
+	log.Fatal(http.ListenAndServe(":12345", nil))
 }
 
 func wsPage(res http.ResponseWriter, req *http.Request) {
